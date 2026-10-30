@@ -1,0 +1,11 @@
+# Binarios y objetos
+hough
+*.o
+
+# macOS
+.DS_Store
+
+# Archivos que no se suben
+AVANCES.md
+docs/MARIO.md
+Proyecto 3 - CUDA.pdf

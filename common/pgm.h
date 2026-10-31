@@ -1,6 +1,7 @@
 /*
  ============================================================================
  Archivo     : pgm.h
+ Autor       : Mario Rocha - Proyecto 3, Computacion Paralela, UVG
  Descripcion : Lectura y escritura de imagenes PGM en escala de grises
                (formatos P5 binario y P2 ASCII, 8 bits por pixel).
  ============================================================================
@@ -8,6 +9,11 @@
 #ifndef PGM_H
 #define PGM_H
 
+/*****************************************************************
+ * Clase      : PGMImage
+ * Descripcion: Imagen en escala de grises guardada fila por fila.
+ *              El pixel (columna i, fila j) esta en pixels[j * x_dim + i].
+ *****************************************************************/
 class PGMImage
 {
 public:
@@ -22,6 +28,7 @@ public:
   // Crea una imagen vacia (en negro) de x * y pixeles.
   PGMImage (int x, int y, int col = 255);
 
+  // Libera pixels.
   ~PGMImage ();
 
   // Guarda la imagen en formato P5. Devuelve true si tuvo exito.

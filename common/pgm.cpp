@@ -1,6 +1,7 @@
 /*
  ============================================================================
  Archivo     : pgm.cpp
+ Autor       : Mario Rocha - Proyecto 3, Computacion Paralela, UVG
  Descripcion : Implementacion de PGMImage (ver pgm.h).
  ============================================================================
  */
@@ -10,9 +11,13 @@
 #include <ctype.h>
 #include "pgm.h"
 
-//*****************************************************************
-// Salta espacios en blanco y comentarios (lineas que inician con '#')
-// del encabezado PGM.
+/*****************************************************************
+ * Funcion    : skipWhitespaceAndComments
+ * Descripcion: Salta espacios en blanco y comentarios (lineas que
+ *              inician con '#') del encabezado PGM.
+ * Parametros : f - archivo abierto en modo lectura
+ * Retorno    : ninguno (deja f en el siguiente caracter util)
+ *****************************************************************/
 static void skipWhitespaceAndComments (FILE *f)
 {
   int c;
@@ -31,8 +36,13 @@ static void skipWhitespaceAndComments (FILE *f)
     }
 }
 
-//*****************************************************************
-// Lee el siguiente entero del encabezado PGM.
+/*****************************************************************
+ * Funcion    : readHeaderInt
+ * Descripcion: Lee el siguiente entero del encabezado PGM. Termina
+ *              el programa si no encuentra un entero valido.
+ * Parametros : f - archivo abierto en modo lectura
+ * Retorno    : el entero leido
+ *****************************************************************/
 static int readHeaderInt (FILE *f)
 {
   int value;
@@ -45,7 +55,14 @@ static int readHeaderInt (FILE *f)
   return value;
 }
 
-//*****************************************************************
+/*****************************************************************
+ * Funcion    : PGMImage::PGMImage (constructor desde archivo)
+ * Descripcion: Lee el encabezado (magic number, ancho, alto, maximo
+ *              de gris) y luego los pixeles. Termina el programa si
+ *              el archivo no existe o no es un PGM valido.
+ * Parametros : fname - ruta del archivo .pgm
+ * Retorno    : ninguno
+ *****************************************************************/
 PGMImage::PGMImage (const char *fname)
 {
   FILE *f = fopen (fname, "rb");
@@ -55,6 +72,7 @@ PGMImage::PGMImage (const char *fname)
       exit (1);
     }
 
+  // --- Encabezado ---
   char magic[3] = {0};
   if (fread (magic, 1, 2, f) != 2 || magic[0] != 'P' || (magic[1] != '5' && magic[1] != '2'))
     {
@@ -71,6 +89,7 @@ PGMImage::PGMImage (const char *fname)
       exit (1);
     }
 
+  // --- Pixeles ---
   int total = x_dim * y_dim;
   pixels = new unsigned char[total];
 
@@ -92,7 +111,14 @@ PGMImage::PGMImage (const char *fname)
   fclose (f);
 }
 
-//*****************************************************************
+/*****************************************************************
+ * Funcion    : PGMImage::PGMImage (constructor de imagen vacia)
+ * Descripcion: Crea una imagen de x * y pixeles en negro.
+ * Parametros : x   - ancho
+ *              y   - alto
+ *              col - valor maximo de gris
+ * Retorno    : ninguno
+ *****************************************************************/
 PGMImage::PGMImage (int x, int y, int col)
 {
   x_dim = x;
@@ -102,13 +128,23 @@ PGMImage::PGMImage (int x, int y, int col)
   memset (pixels, 0, x * y);
 }
 
-//*****************************************************************
+/*****************************************************************
+ * Funcion    : PGMImage::~PGMImage
+ * Descripcion: Libera el arreglo de pixeles (reservado con new[]).
+ * Parametros : ninguno
+ * Retorno    : ninguno
+ *****************************************************************/
 PGMImage::~PGMImage ()
 {
   delete[] pixels;
 }
 
-//*****************************************************************
+/*****************************************************************
+ * Funcion    : PGMImage::write
+ * Descripcion: Guarda la imagen en formato P5 (binario).
+ * Parametros : fname - ruta del archivo de salida
+ * Retorno    : true si se escribieron todos los pixeles
+ *****************************************************************/
 bool PGMImage::write (const char *fname)
 {
   FILE *f = fopen (fname, "wb");

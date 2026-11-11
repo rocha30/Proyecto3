@@ -3,12 +3,15 @@
  Archivo       : hough.cu
  Autor base    : G. Barlas (version 1.0, diciembre 2014)
  Modificado por: Mario Rocha - Proyecto 3, Computacion Paralela, UVG
+                 Luis Pedro Lira - Proyecto 3, Computacion Paralela, UVG
  Licencia      : GNU GPL 3.0
  Descripcion   : Transformada lineal de Hough en CUDA. Cada pixel encendido
                  de una imagen PGM vota por todas las rectas (r, theta) que
                  pasan por el. Se calcula en CPU (referencia) y en GPU, se
                  comparan los acumuladores y se mide el tiempo del kernel
-                 con CUDA events. Hay un kernel por tipo de memoria:
+                 con CUDA events. Al final se dibujan las lineas detectadas
+                 sobre la imagen en output/lineas.png. Hay un kernel por
+                 tipo de memoria:
                    global     - tablas cos/sin y acumulador en memoria Global
                    constante  - tablas cos/sin en memoria Constante
                    compartida - Constante + acumulador local por bloque en
@@ -33,6 +36,7 @@
 #include <cuda.h>
 #include <string.h>
 #include "common/pgm.h"
+#include "common/lineas.h"
 
 // Discretizacion del espacio de Hough
 const int degreeInc = 2;                       // incremento de theta en grados
@@ -285,7 +289,8 @@ __global__ void GPU_HoughTranShared (unsigned char *pic, int w, int h, int *acc,
  * Funcion    : main
  * Descripcion: Lee la imagen, calcula la transformada en CPU y en GPU
  *              con el kernel elegido, mide el tiempo del kernel, compara
- *              ambos acumuladores y libera toda la memoria.
+ *              ambos acumuladores, dibuja las lineas detectadas en
+ *              output/lineas.png y libera toda la memoria.
  * Parametros : argc, argv - argv[1] es la ruta de la imagen .pgm
  *                           argv[2] (opcional) es el kernel a usar:
  *                           global (default), constante o compartida
@@ -415,6 +420,12 @@ int main (int argc, char **argv)
       printf ("Calculation mismatch at : %i %i %i\n", i, cpuht[i], h_hough[i]);
   }
   printf("Done!\n");
+
+  // --- Imagen de salida con las lineas detectadas ---
+  // Se genera despues de medir el kernel, asi que no afecta los tiempos.
+  // Usa el acumulador de la GPU (h_hough).
+  DrawLines ("output/lineas.png", inImg.pixels, w, h, h_hough,
+             degreeBins, rBins, radInc, rMax, rScale);
 
   // --- Liberacion de memoria y reinicio del dispositivo ---
   cudaFree (d_in);       // device: cudaMalloc -> cudaFree

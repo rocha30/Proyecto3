@@ -4,7 +4,7 @@
 # Corre ./hough varias veces y guarda el tiempo del kernel de cada corrida.
 #
 # Uso: ./run_bitacora.sh <version> [corridas] [imagen]
-#   version  : nombre del CSV de salida (ej. global, constante)
+#   version  : kernel a correr y nombre del CSV (global, constante)
 #   corridas : numero de ejecuciones (default 10)
 #   imagen   : imagen PGM de entrada (default runway.pgm)
 #
@@ -23,7 +23,7 @@ mkdir -p bitacora
 echo "corrida,tiempo_ms" > "$OUT"
 
 for i in $(seq 1 "$RUNS"); do
-  salida=$(./hough "$IMG")
+  salida=$(./hough "$IMG" "$VERSION")
 
   if echo "$salida" | grep -q "mismatch"; then
     echo "Aviso: la corrida $i tuvo diferencias contra la version CPU" >&2

@@ -8,9 +8,11 @@
                  de una imagen PGM vota por todas las rectas (r, theta) que
                  pasan por el. Se calcula en CPU (referencia) y en GPU, se
                  comparan los acumuladores y se mide el tiempo del kernel
-                 con CUDA events.
+                 con CUDA events. Hay un kernel por tipo de memoria:
+                   global    - tablas cos/sin y acumulador en memoria Global
+                   constante - tablas cos/sin en memoria Constante
  Compilar      : make
- Ejecutar      : ./hough <imagen.pgm>
+ Ejecutar      : ./hough <imagen.pgm> [global|constante]   (default: global)
  ============================================================================
 
  Estilo de documentacion
@@ -85,19 +87,21 @@ void CPU_HoughTran (unsigned char *pic, int w, int h, int **acc)
 }
 
 //*****************************************************************
-// TODO (memoria Constante): tablas de senos y cosenos en memoria
-// constante, inicializadas en main con cudaMemcpyToSymbol.
-//__constant__ float d_Cos[degreeBins];
-//__constant__ float d_Sin[degreeBins];
+// Tablas de senos y cosenos en memoria Constante.
+// Se declaran aqui, fuera de main, para que tengan scope global y los
+// kernels las lean sin recibirlas como parametro. El host las llena con
+// cudaMemcpyToSymbol; no se reservan con cudaMalloc ni se liberan con
+// cudaFree. Se llaman c_Cos/c_Sin (y no d_Cos/d_Sin como en el
+// enunciado) porque d_Cos/d_Sin ya son los punteros en memoria Global
+// que usa el kernel GPU_HoughTran, y los parametros con ese nombre
+// taparian a estas tablas.
+// Tamano: 2 * 90 floats = 720 bytes, muy por debajo del limite de 64 KB.
+__constant__ float c_Cos[degreeBins];
+__constant__ float c_Sin[degreeBins];
 
 //*****************************************************************
 // TODO (memoria Compartida): kernel con acumulador local por bloque.
 // __global__ void GPU_HoughTranShared(...)
-// {
-// }
-
-// TODO (memoria Constante): kernel que lee d_Cos/d_Sin de memoria constante.
-// __global__ void GPU_HoughTranConst(...)
 // {
 // }
 
@@ -169,24 +173,78 @@ __global__ void GPU_HoughTran (unsigned char *pic, int w, int h, int *acc, float
 }
 
 /*****************************************************************
+ * Funcion    : GPU_HoughTranConst  (kernel, memoria Global + Constante)
+ * Descripcion: Igual a GPU_HoughTran, pero lee cos(theta) y sin(theta)
+ *              de las tablas c_Cos/c_Sin en memoria Constante en lugar
+ *              de recibirlas como punteros a memoria Global.
+ * Parametros : pic    - imagen en memoria global del device
+ *              w, h   - ancho y alto de la imagen
+ *              acc    - acumulador en memoria global (inicializado en 0
+ *                       por el host)
+ *              rMax   - radio maximo (centro -> esquina)
+ *              rScale - ancho de cada bin de r
+ * Retorno    : ninguno (el resultado queda en acc)
+ *****************************************************************/
+__global__ void GPU_HoughTranConst (unsigned char *pic, int w, int h, int *acc, float rMax, float rScale)
+{
+  // --- ID global del hilo (mismo calculo que en GPU_HoughTran) ---
+  int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+  if (gloID >= w * h) return;
+
+  int xCent = w / 2;
+  int yCent = h / 2;
+
+  // --- Indice lineal -> coordenadas cartesianas (origen al centro) ---
+  int xCoord = gloID % w - xCent;
+  int yCoord = yCent - gloID / w;
+
+  // --- Votacion ---
+  if (pic[gloID] > 0)
+    {
+      for (int tIdx = 0; tIdx < degreeBins; tIdx++)
+        {
+          // En cada iteracion todos los hilos del warp leen la misma
+          // posicion c_Cos[tIdx] / c_Sin[tIdx]. La memoria Constante hace
+          // broadcast de ese valor a todo el warp en una sola lectura.
+          float r = xCoord * c_Cos[tIdx] + yCoord * c_Sin[tIdx];
+          int rIdx = (r + rMax) / rScale;
+          // varios pixeles votan por la misma celda: suma atomica
+          atomicAdd (acc + (rIdx * degreeBins + tIdx), 1);
+        }
+    }
+}
+
+/*****************************************************************
  * Funcion    : main
- * Descripcion: Lee la imagen, calcula la transformada en CPU y en GPU,
- *              mide el tiempo del kernel, compara ambos acumuladores y
- *              libera toda la memoria.
+ * Descripcion: Lee la imagen, calcula la transformada en CPU y en GPU
+ *              con el kernel elegido, mide el tiempo del kernel, compara
+ *              ambos acumuladores y libera toda la memoria.
  * Parametros : argc, argv - argv[1] es la ruta de la imagen .pgm
+ *                           argv[2] (opcional) es el kernel a usar:
+ *                           global (default) o constante
  * Retorno    : 0 si todo salio bien, 1 si hubo un error
  *****************************************************************/
 int main (int argc, char **argv)
 {
   int i;
 
-  // --- Lectura de la imagen ---
+  // --- Argumentos: imagen y kernel ---
   if (argc < 2)
   {
-    fprintf (stderr, "Uso: %s <imagen.pgm>\n", argv[0]);
+    fprintf (stderr, "Uso: %s <imagen.pgm> [global|constante]\n", argv[0]);
     return 1;
   }
 
+  // Se valida antes de reservar memoria para no dejar nada sin liberar.
+  const char *version = (argc >= 3) ? argv[2] : "global";
+  if (strcmp (version, "global") != 0 && strcmp (version, "constante") != 0)
+  {
+    fprintf (stderr, "Kernel desconocido: %s (usar global o constante)\n", version);
+    return 1;
+  }
+  printf ("Kernel: %s\n", version);
+
+  // --- Lectura de la imagen ---
   PGMImage inImg (argv[1]);   // el destructor libera inImg.pixels
 
   int *cpuht;
@@ -218,9 +276,14 @@ int main (int argc, char **argv)
   float rMax = sqrt (1.0 * w * w + 1.0 * h * h) / 2;
   float rScale = 2 * rMax / rBins;
 
-  // TODO (memoria Constante): reemplazar por cudaMemcpyToSymbol.
-  cudaMemcpy(d_Cos, pcCos, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_Sin, pcSin, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
+  // Memoria Global (kernel global): copia normal a los punteros de cudaMalloc.
+  cudaMemcpy (d_Cos, pcCos, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
+  cudaMemcpy (d_Sin, pcSin, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
+
+  // Memoria Constante (kernel constante): las tablas son simbolos
+  // __constant__, asi que se copian con cudaMemcpyToSymbol.
+  cudaMemcpyToSymbol (c_Cos, pcCos, sizeof (float) * degreeBins);
+  cudaMemcpyToSymbol (c_Sin, pcSin, sizeof (float) * degreeBins);
 
   // --- Reserva y copia de datos host -> device ---
   unsigned char *d_in, *h_in;
@@ -242,13 +305,16 @@ int main (int argc, char **argv)
 
   // --- Lanzamiento del kernel y medicion con CUDA events ---
   // Los eventos se registran en el stream de la GPU, asi que se mide
-  // solo el tiempo del kernel y no el del host.
+  // solo el tiempo del kernel elegido y no el del host.
   cudaEvent_t start, stop;
   cudaEventCreate (&start);
   cudaEventCreate (&stop);
 
   cudaEventRecord (start);
-  GPU_HoughTran <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
+  if (strcmp (version, "constante") == 0)
+    GPU_HoughTranConst <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale);
+  else
+    GPU_HoughTran <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
   cudaEventRecord (stop);
   cudaEventSynchronize (stop);   // esperar a que el kernel termine
 
@@ -285,6 +351,8 @@ int main (int argc, char **argv)
   cudaFree (d_hough);
   cudaFree (d_Cos);
   cudaFree (d_Sin);
+  // c_Cos/c_Sin son memoria Constante estatica: no se liberan con
+  // cudaFree; se liberan con el contexto en cudaDeviceReset().
   free (pcCos);          // host: malloc -> free
   free (pcSin);
   free (h_hough);

@@ -4,7 +4,7 @@
 # Corre ./hough varias veces y guarda el tiempo del kernel de cada corrida.
 #
 # Uso: ./run_bitacora.sh <version> [corridas] [imagen]
-#   version  : kernel a correr y nombre del CSV (global, constante)
+#   version  : kernel a correr y nombre del CSV (global, constante, compartida)
 #   corridas : numero de ejecuciones (default 10)
 #   imagen   : imagen PGM de entrada (default runway.pgm)
 #

@@ -9,10 +9,13 @@
                  pasan por el. Se calcula en CPU (referencia) y en GPU, se
                  comparan los acumuladores y se mide el tiempo del kernel
                  con CUDA events. Hay un kernel por tipo de memoria:
-                   global    - tablas cos/sin y acumulador en memoria Global
-                   constante - tablas cos/sin en memoria Constante
+                   global     - tablas cos/sin y acumulador en memoria Global
+                   constante  - tablas cos/sin en memoria Constante
+                   compartida - Constante + acumulador local por bloque en
+                                memoria Compartida
  Compilar      : make
- Ejecutar      : ./hough <imagen.pgm> [global|constante]   (default: global)
+ Ejecutar      : ./hough <imagen.pgm> [global|constante|compartida]
+                 (default: global)
  ============================================================================
 
  Estilo de documentacion
@@ -99,12 +102,6 @@ void CPU_HoughTran (unsigned char *pic, int w, int h, int **acc)
 __constant__ float c_Cos[degreeBins];
 __constant__ float c_Sin[degreeBins];
 
-//*****************************************************************
-// TODO (memoria Compartida): kernel con acumulador local por bloque.
-// __global__ void GPU_HoughTranShared(...)
-// {
-// }
-
 /*****************************************************************
  * Funcion    : GPU_HoughTran  (kernel, memoria Global)
  * Descripcion: Un hilo por pixel. Si el pixel esta encendido, vota
@@ -167,9 +164,6 @@ __global__ void GPU_HoughTran (unsigned char *pic, int w, int h, int *acc, float
           atomicAdd (acc + (rIdx * degreeBins + tIdx), 1);
         }
     }
-
-  // TODO (memoria Compartida): votar en un acumulador local del bloque,
-  // sincronizar con __syncthreads() y luego sumar al global con atomicAdd.
 }
 
 /*****************************************************************
@@ -215,13 +209,86 @@ __global__ void GPU_HoughTranConst (unsigned char *pic, int w, int h, int *acc, 
 }
 
 /*****************************************************************
+ * Funcion    : GPU_HoughTranShared  (kernel, Global + Constante +
+ *              Compartida)
+ * Descripcion: Cada bloque vota primero en un acumulador local
+ *              localAcc en memoria Compartida y, al final, suma ese
+ *              acumulador local al acumulador global acc. Asi la
+ *              mayoria de los atomicAdd ocurren en memoria Compartida
+ *              (on-chip) y no en memoria Global. Las tablas cos/sin se
+ *              leen de memoria Constante (c_Cos/c_Sin).
+ * Parametros : pic    - imagen en memoria global del device
+ *              w, h   - ancho y alto de la imagen
+ *              acc    - acumulador en memoria global (inicializado en 0
+ *                       por el host)
+ *              rMax   - radio maximo (centro -> esquina)
+ *              rScale - ancho de cada bin de r
+ * Retorno    : ninguno (el resultado queda en acc)
+ *****************************************************************/
+__global__ void GPU_HoughTranShared (unsigned char *pic, int w, int h, int *acc, float rMax, float rScale)
+{
+  // --- IDs del hilo ---
+  int gloID = blockIdx.x * blockDim.x + threadIdx.x;   // pixel que procesa
+  int locID = threadIdx.x;                             // posicion en el bloque
+
+  // --- Acumulador local del bloque en memoria Compartida ---
+  // degreeBins * rBins = 9000 ints = 36 KB, cabe en los 48 KB de memoria
+  // compartida por bloque. Solo lo ven los hilos de este bloque.
+  __shared__ int localAcc[degreeBins * rBins];
+
+  // --- Inicializacion de localAcc en 0 ---
+  // La memoria compartida no se puede inicializar desde el host. Los 256
+  // hilos del bloque se reparten las 9000 celdas: el hilo locID limpia
+  // locID, locID + blockDim.x, locID + 2 * blockDim.x, ...
+  for (int i = locID; i < degreeBins * rBins; i += blockDim.x)
+    localAcc[i] = 0;
+
+  // Barrera 1: nadie vota hasta que todo localAcc este en 0.
+  __syncthreads ();
+
+  // --- Votacion en el acumulador local ---
+  // Aqui NO se usa "return" para los hilos sobrantes del ultimo bloque
+  // (como en los otros kernels): todos los hilos del bloque deben llegar
+  // a las dos barreras, o el comportamiento de __syncthreads() es
+  // indefinido. Por eso se usa la condicion gloID < w * h.
+  if (gloID < w * h && pic[gloID] > 0)
+    {
+      int xCent = w / 2;
+      int yCent = h / 2;
+      // indice lineal -> coordenadas cartesianas (origen al centro)
+      int xCoord = gloID % w - xCent;
+      int yCoord = yCent - gloID / w;
+
+      for (int tIdx = 0; tIdx < degreeBins; tIdx++)
+        {
+          float r = xCoord * c_Cos[tIdx] + yCoord * c_Sin[tIdx];
+          int rIdx = (r + rMax) / rScale;
+          // varios hilos del bloque votan por la misma celda: suma
+          // atomica, pero sobre memoria Compartida (mucho mas rapida)
+          atomicAdd (localAcc + (rIdx * degreeBins + tIdx), 1);
+        }
+    }
+
+  // Barrera 2: nadie copia al global hasta que todos hayan votado.
+  __syncthreads ();
+
+  // --- Suma del acumulador local al global ---
+  // Mismo reparto que en la inicializacion. Varios bloques suman a la
+  // misma celda de acc, por eso tambien es atomicAdd. Las celdas en 0 se
+  // saltan porque no aportan nada y evitan accesos a memoria Global.
+  for (int i = locID; i < degreeBins * rBins; i += blockDim.x)
+    if (localAcc[i] > 0)
+      atomicAdd (acc + i, localAcc[i]);
+}
+
+/*****************************************************************
  * Funcion    : main
  * Descripcion: Lee la imagen, calcula la transformada en CPU y en GPU
  *              con el kernel elegido, mide el tiempo del kernel, compara
  *              ambos acumuladores y libera toda la memoria.
  * Parametros : argc, argv - argv[1] es la ruta de la imagen .pgm
  *                           argv[2] (opcional) es el kernel a usar:
- *                           global (default) o constante
+ *                           global (default), constante o compartida
  * Retorno    : 0 si todo salio bien, 1 si hubo un error
  *****************************************************************/
 int main (int argc, char **argv)
@@ -231,15 +298,16 @@ int main (int argc, char **argv)
   // --- Argumentos: imagen y kernel ---
   if (argc < 2)
   {
-    fprintf (stderr, "Uso: %s <imagen.pgm> [global|constante]\n", argv[0]);
+    fprintf (stderr, "Uso: %s <imagen.pgm> [global|constante|compartida]\n", argv[0]);
     return 1;
   }
 
   // Se valida antes de reservar memoria para no dejar nada sin liberar.
   const char *version = (argc >= 3) ? argv[2] : "global";
-  if (strcmp (version, "global") != 0 && strcmp (version, "constante") != 0)
+  if (strcmp (version, "global") != 0 && strcmp (version, "constante") != 0
+      && strcmp (version, "compartida") != 0)
   {
-    fprintf (stderr, "Kernel desconocido: %s (usar global o constante)\n", version);
+    fprintf (stderr, "Kernel desconocido: %s (usar global, constante o compartida)\n", version);
     return 1;
   }
   printf ("Kernel: %s\n", version);
@@ -280,7 +348,7 @@ int main (int argc, char **argv)
   cudaMemcpy (d_Cos, pcCos, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
   cudaMemcpy (d_Sin, pcSin, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
 
-  // Memoria Constante (kernel constante): las tablas son simbolos
+  // Memoria Constante (kernels constante y compartida): las tablas son simbolos
   // __constant__, asi que se copian con cudaMemcpyToSymbol.
   cudaMemcpyToSymbol (c_Cos, pcCos, sizeof (float) * degreeBins);
   cudaMemcpyToSymbol (c_Sin, pcSin, sizeof (float) * degreeBins);
@@ -313,6 +381,8 @@ int main (int argc, char **argv)
   cudaEventRecord (start);
   if (strcmp (version, "constante") == 0)
     GPU_HoughTranConst <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale);
+  else if (strcmp (version, "compartida") == 0)
+    GPU_HoughTranShared <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale);
   else
     GPU_HoughTran <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
   cudaEventRecord (stop);

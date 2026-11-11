@@ -19,7 +19,9 @@
  *                   estandar de todas las celdas del acumulador, y
  *                2) es un maximo local: ninguna de sus 8 celdas vecinas
  *                   tiene mas votos (evita dibujar muchas rectas casi
- *                   iguales alrededor de la misma linea real).
+ *                   iguales alrededor de la misma linea real), y
+ *                3) esta entre las maxLineas celdas con mas votos de las
+ *                   que cumplen 1) y 2).
  * Parametros : fname      - ruta del PNG de salida (se crea la carpeta
  *                           "output" si no existe)
  *              pic        - pixeles de la imagen en gris (w * h, fila por
@@ -32,10 +34,11 @@
  *              radInc     - incremento de theta en radianes
  *              rMax       - radio maximo (centro -> esquina)
  *              rScale     - ancho de cada bin de r
+ *              maxLineas  - numero maximo de lineas a dibujar
  * Retorno    : numero de lineas dibujadas, o -1 si no se pudo guardar
  *****************************************************************/
 int DrawLines (const char *fname, unsigned char *pic, int w, int h,
                int *acc, int degreeBins, int rBins, float radInc,
-               float rMax, float rScale);
+               float rMax, float rScale, int maxLineas);
 
 #endif

@@ -2,6 +2,7 @@
  ============================================================================
  Archivo     : lineas.cpp
  Autor       : Luis Pedro Lira - Proyecto 3, Computacion Paralela, UVG
+ Modificado  : Mario Rocha - seleccion de las maxLineas con mas votos
  Descripcion : Implementacion de DrawLines (ver lineas.h). Usa la libreria
                de un solo header stb_image_write (dominio publico, S. Barrett)
                para escribir el PNG.
@@ -88,7 +89,7 @@ static void PintarPixel (unsigned char *rgb, int w, int h, int i, int j)
  *****************************************************************/
 int DrawLines (const char *fname, unsigned char *pic, int w, int h,
                int *acc, int degreeBins, int rBins, float radInc,
-               float rMax, float rScale)
+               float rMax, float rScale, int maxLineas)
 {
   int nCeldas = degreeBins * rBins;
 
@@ -119,54 +120,78 @@ int DrawLines (const char *fname, unsigned char *pic, int w, int h,
       rgb[3 * k + 2] = pic[k];
     }
 
+  // --- Candidatas: sobre el threshold y maximos locales ---
+  int *cand = (int *) malloc (sizeof (int) * nCeldas);
+  if (cand == NULL)
+    {
+      fprintf (stderr, "DrawLines: no se pudo reservar la lista de candidatas\n");
+      free (rgb);
+      return -1;
+    }
+  int nCand = 0;
+  for (int k = 0; k < nCeldas; k++)
+    if (acc[k] > threshold && EsMaximoLocal (acc, k / degreeBins, k % degreeBins, degreeBins, rBins))
+      cand[nCand++] = k;
+
+  // --- Seleccion de las maxLineas candidatas con mas votos ---
+  // Seleccion parcial: en cada paso se mueve al frente la de mas votos
+  // entre las que quedan. Son pocas candidatas, asi que basta con esto.
+  int nSel = (nCand < maxLineas) ? nCand : maxLineas;
+  for (int a = 0; a < nSel; a++)
+    {
+      int mejor = a;
+      for (int b = a + 1; b < nCand; b++)
+        if (acc[cand[b]] > acc[cand[mejor]])
+          mejor = b;
+      int tmp = cand[a]; cand[a] = cand[mejor]; cand[mejor] = tmp;
+    }
+
   // --- Dibujo de las rectas seleccionadas ---
   int xCent = w / 2;
   int yCent = h / 2;
   int nLineas = 0;
 
-  for (int rIdx = 0; rIdx < rBins; rIdx++)
-    for (int tIdx = 0; tIdx < degreeBins; tIdx++)
-      {
-        if (acc[rIdx * degreeBins + tIdx] <= threshold)
-          continue;
-        if (!EsMaximoLocal (acc, rIdx, tIdx, degreeBins, rBins))
-          continue;
+  for (int q = 0; q < nSel; q++)
+    {
+      int rIdx = cand[q] / degreeBins;
+      int tIdx = cand[q] % degreeBins;
 
-        // (rIdx, tIdx) -> (r, theta). r es el centro del bin: el kernel
-        // calcula rIdx = (r + rMax) / rScale, asi que el bin rIdx cubre
-        // [rIdx * rScale - rMax, (rIdx + 1) * rScale - rMax).
-        float theta = tIdx * radInc;
-        float r = rIdx * rScale - rMax + rScale / 2;
-        float c = cos (theta);
-        float s = sin (theta);
+      // (rIdx, tIdx) -> (r, theta). r es el centro del bin: el kernel
+      // calcula rIdx = (r + rMax) / rScale, asi que el bin rIdx cubre
+      // [rIdx * rScale - rMax, (rIdx + 1) * rScale - rMax).
+      float theta = tIdx * radInc;
+      float r = rIdx * rScale - rMax + rScale / 2;
+      float c = cos (theta);
+      float s = sin (theta);
 
-        // La recta es x cos(theta) + y sin(theta) = r en coordenadas
-        // centradas. Para pasar a pixel se usa la inversa de xCoord/yCoord
-        // del kernel: i = x + xCent, j = yCent - y.
-        // Se recorre el eje en el que la recta avanza mas rapido, para que
-        // quede continua (sin huecos):
-        if (fabs (s) > fabs (c))
-          {
-            // recta mas horizontal: una fila j por cada columna i
-            for (int i = 0; i < w; i++)
-              {
-                float x = i - xCent;
-                float y = (r - x * c) / s;
-                PintarPixel (rgb, w, h, i, (int) lroundf (yCent - y));
-              }
-          }
-        else
-          {
-            // recta mas vertical: una columna i por cada fila j
-            for (int j = 0; j < h; j++)
-              {
-                float y = yCent - j;
-                float x = (r - y * s) / c;
-                PintarPixel (rgb, w, h, (int) lroundf (x + xCent), j);
-              }
-          }
-        nLineas++;
-      }
+      // La recta es x cos(theta) + y sin(theta) = r en coordenadas
+      // centradas. Para pasar a pixel se usa la inversa de xCoord/yCoord
+      // del kernel: i = x + xCent, j = yCent - y.
+      // Se recorre el eje en el que la recta avanza mas rapido, para que
+      // quede continua (sin huecos):
+      if (fabs (s) > fabs (c))
+        {
+          // recta mas horizontal: una fila j por cada columna i
+          for (int i = 0; i < w; i++)
+            {
+              float x = i - xCent;
+              float y = (r - x * c) / s;
+              PintarPixel (rgb, w, h, i, (int) lroundf (yCent - y));
+            }
+        }
+      else
+        {
+          // recta mas vertical: una columna i por cada fila j
+          for (int j = 0; j < h; j++)
+            {
+              float y = yCent - j;
+              float x = (r - y * s) / c;
+              PintarPixel (rgb, w, h, (int) lroundf (x + xCent), j);
+            }
+        }
+      nLineas++;
+    }
+  free (cand);   // malloc -> free
 
   // --- Escritura del PNG ---
   // Se crea la carpeta "output"; si ya existe, mkdir falla con EEXIST y se
@@ -183,7 +208,7 @@ int DrawLines (const char *fname, unsigned char *pic, int w, int h,
       return -1;
     }
 
-  printf ("Imagen de salida: %s (%d lineas, threshold = %.1f votos)\n",
-          fname, nLineas, threshold);
+  printf ("Imagen de salida: %s (%d lineas de %d candidatas, threshold = %.1f votos)\n",
+          fname, nLineas, nCand, threshold);
   return nLineas;
 }

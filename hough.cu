@@ -5,9 +5,10 @@
  Modificado por: Mario Rocha - Proyecto 3, Computacion Paralela, UVG
                  Luis Pedro Lira - Proyecto 3, Computacion Paralela, UVG
  Licencia      : GNU GPL 3.0
- Descripcion   : Transformada lineal de Hough en CUDA. Cada pixel encendido
-                 de una imagen PGM vota por todas las rectas (r, theta) que
-                 pasan por el. Se calcula en CPU (referencia) y en GPU, se
+ Descripcion   : Transformada lineal de Hough en CUDA. La imagen PGM de
+                 bordes se binariza (gris > pixelThreshold = encendido) y
+                 cada pixel encendido vota por todas las rectas (r, theta)
+                 que pasan por el. Se calcula en CPU (referencia) y en GPU, se
                  comparan los acumuladores y se mide el tiempo del kernel
                  con CUDA events. Al final se dibujan las lineas detectadas
                  sobre la imagen en output/lineas.png. Hay un kernel por
@@ -43,6 +44,17 @@ const int degreeInc = 2;                       // incremento de theta en grados
 const int degreeBins = 180 / degreeInc;        // 90 valores de theta en [0, 180)
 const int rBins = 100;                         // 100 valores de r en [-rMax, rMax]
 const float radInc = degreeInc * M_PI / 180;   // incremento de theta en radianes
+
+// Binarizacion de la imagen de entrada.
+// runway.pgm es una imagen de bordes en escala de grises: el 86% de sus
+// pixeles con gris > 0 es ruido muy tenue (gris de 1 a 10). Si todos esos
+// pixeles votan, las rectas ganadoras son las mas largas que cruzan la
+// zona con ruido y no los bordes reales. Por eso solo se consideran
+// encendidos los pixeles con gris > pixelThreshold (~10% de 255).
+const int pixelThreshold = 25;
+
+// Numero maximo de lineas que se dibujan en la imagen de salida.
+const int maxLines = 10;
 
 /*****************************************************************
  * Funcion    : CPU_HoughTran
@@ -287,8 +299,8 @@ __global__ void GPU_HoughTranShared (unsigned char *pic, int w, int h, int *acc,
 
 /*****************************************************************
  * Funcion    : main
- * Descripcion: Lee la imagen, calcula la transformada en CPU y en GPU
- *              con el kernel elegido, mide el tiempo del kernel, compara
+ * Descripcion: Lee y binariza la imagen, calcula la transformada en CPU
+ *              y en GPU con el kernel elegido, mide el tiempo del kernel, compara
  *              ambos acumuladores, dibuja las lineas detectadas en
  *              output/lineas.png y libera toda la memoria.
  * Parametros : argc, argv - argv[1] es la ruta de la imagen .pgm
@@ -324,6 +336,20 @@ int main (int argc, char **argv)
   int w = inImg.x_dim;
   int h = inImg.y_dim;
 
+  // --- Binarizacion de la imagen ---
+  // Copia en blanco y negro: 255 si gris > pixelThreshold, 0 si no. La
+  // usan la version CPU y los kernels (que votan si pic[gloID] > 0); la
+  // imagen original en gris se conserva para dibujar las lineas encima.
+  // Se hace en el host, fuera de la region medida con CUDA events.
+  unsigned char *h_bin = (unsigned char *) malloc (sizeof (unsigned char) * w * h);
+  int nEncendidos = 0;
+  for (i = 0; i < w * h; i++)
+  {
+    h_bin[i] = (inImg.pixels[i] > pixelThreshold) ? 255 : 0;
+    if (h_bin[i]) nEncendidos++;
+  }
+  printf ("Pixeles encendidos (gris > %d): %d de %d\n", pixelThreshold, nEncendidos, w * h);
+
   float* d_Cos;
   float* d_Sin;
 
@@ -331,7 +357,7 @@ int main (int argc, char **argv)
   cudaMalloc ((void **) &d_Sin, sizeof (float) * degreeBins);
 
   // --- Version CPU (referencia) ---
-  CPU_HoughTran(inImg.pixels, w, h, &cpuht);
+  CPU_HoughTran(h_bin, w, h, &cpuht);
 
   // --- Tablas de senos y cosenos ---
   // Se calculan una sola vez en el host para no evaluar funciones
@@ -362,7 +388,7 @@ int main (int argc, char **argv)
   unsigned char *d_in, *h_in;
   int *d_hough, *h_hough;
 
-  h_in = inImg.pixels;
+  h_in = h_bin;   // a la GPU va la imagen binarizada
 
   h_hough = (int *) malloc (degreeBins * rBins * sizeof (int));
 
@@ -423,9 +449,10 @@ int main (int argc, char **argv)
 
   // --- Imagen de salida con las lineas detectadas ---
   // Se genera despues de medir el kernel, asi que no afecta los tiempos.
-  // Usa el acumulador de la GPU (h_hough).
+  // Usa el acumulador de la GPU (h_hough) y dibuja sobre la imagen
+  // original en gris (no sobre la binarizada).
   DrawLines ("output/lineas.png", inImg.pixels, w, h, h_hough,
-             degreeBins, rBins, radInc, rMax, rScale);
+             degreeBins, rBins, radInc, rMax, rScale, maxLines);
 
   // --- Liberacion de memoria y reinicio del dispositivo ---
   cudaFree (d_in);       // device: cudaMalloc -> cudaFree
@@ -437,6 +464,7 @@ int main (int argc, char **argv)
   free (pcCos);          // host: malloc -> free
   free (pcSin);
   free (h_hough);
+  free (h_bin);
   delete[] cpuht;        // host: new[] -> delete[]
   cudaDeviceReset ();    // libera el contexto y los recursos de la GPU
 
